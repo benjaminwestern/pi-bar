@@ -3,25 +3,25 @@
 [![npm version](https://img.shields.io/npm/v/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 [![npm downloads](https://img.shields.io/npm/dm/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 
-**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, extension status, and a live one-line TLDR visible in pi's footer.
+**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, extension status, and a live one-line progress update visible in pi's footer.
 
 ```text
 claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Inspecting package structure  ❯  plan:active
 ```
 
-![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.29/assets/screenshot-green.png)
-![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.29/assets/screenshot-yellow.png)
-![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.29/assets/screenshot-red.png)
+![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-green.png)
+![pi-bar with medium context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-yellow.png)
+![pi-bar with high context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-red.png)
 
 ## Why use it?
 
 - **See the active model at a glance** — catch accidental model switches before an expensive or sensitive task starts.
 - **Track thinking level in place** — immediately notice when you are using the wrong reasoning setting.
 - **Watch context pressure early** — context usage turns green, yellow, then red as you approach the limit.
-- **Follow what pi is doing** — a live TLDR keeps the current task visible without scrolling.
+- **Follow what pi is doing** — a live progress update keeps the current task visible without scrolling.
 - **Keep extension statuses visible** — statuses set with `ctx.ui.setStatus()` still appear in the custom footer.
 
-pi-bar is intentionally tiny: one small extension, no broad behavior changes, and no commands to learn. It replaces pi's built-in footer with a compact model / thinking / context / TLDR / extension-status line.
+pi-bar is intentionally tiny: one small extension, no broad behavior changes, and no commands to learn. It replaces pi's built-in footer with a compact model / thinking / context / progress / extension-status line.
 
 ## Install
 
@@ -42,23 +42,25 @@ pi-bar works out of the box, but you can tune it with environment variables befo
 ### Show or hide segments
 
 ```bash
-PI_BAR_SHOW=model,thinking,context,tldr,extensions pi
+PI_BAR_SHOW=model,thinking,context,progress,extensions pi
 PI_BAR_SHOW=model,context pi
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `tldr`, and `extensions`. The `tldr` segment is hidden until pi-bar generates a current TLDR. The `extensions` segment is hidden when no extension has set a status.
+Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment is hidden until pi-bar generates a current update. The `extensions` segment is hidden when no extension has set a status.
 
-### Configure live TLDR
+> The legacy `tldr` segment name and `PI_BAR_TLDR_MODEL` / `bar.tldrModel` settings still work and are kept as aliases for existing configs.
 
-pi-bar shows a concise live TLDR of the current task in the footer. It generates TLDRs from recent prompt, assistant, and deterministic code-compressed tool facts (for example `bash ... ok`, `grep ... 4 matches`, `read file`, or `custom_tool key=value ok`). It resets when you navigate the session tree so stale summaries do not follow you across branches. Set `PI_BAR_SHOW` without `tldr` to hide it.
+### Configure live progress updates
 
-Override the TLDR model with:
+pi-bar shows a concise live progress update of the current task in the footer. It generates updates from recent prompt, assistant, and deterministic code-compressed tool facts (for example `bash ... ok`, `grep ... 4 matches`, `read file`, or `custom_tool key=value ok`). It resets when you navigate the session tree so stale summaries do not follow you across branches. Set `PI_BAR_SHOW` without `progress` to hide it.
+
+Override the progress update model with:
 
 ```bash
-PI_BAR_TLDR_MODEL=anthropic/claude-haiku-4-5 pi
+PI_BAR_PROGRESS_MODEL=anthropic/claude-haiku-4-5 pi
 ```
 
-You can also set `bar.tldrModel` in pi settings.
+You can also set `bar.progressModel` in pi settings.
 
 ### Configure extension statuses
 
@@ -90,4 +92,4 @@ The first number is the warning/yellow threshold. The second number is the dange
 
 Pi extensions run with your local user permissions. Review any pi package source before installing it.
 
-Live TLDR generation sends short activity snippets to the selected TLDR model provider. Disable the `tldr` segment with `PI_BAR_SHOW` if that is unacceptable.
+Live progress update generation sends short activity snippets to the selected provider. Disable the `progress` segment with `PI_BAR_SHOW` if that is unacceptable.

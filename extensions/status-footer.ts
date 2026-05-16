@@ -2,7 +2,7 @@
  * pi-bar — footer/statusline extension.
  *
  * Replaces the built-in footer with left-aligned segments:
- *   <model name> ❯ think:<level> ❯ <context% / window> ❯ <tldr> ❯ <extension statuses>
+ *   <model name> ❯ think:<level> ❯ <context% / window> ❯ <progress> ❯ <extension statuses>
  *
  * Examples:
  *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M
@@ -11,7 +11,7 @@
  * and after each assistant turn so context usage stays current.
  *
  * Configuration env vars:
- *   PI_BAR_SHOW=model,thinking,context,tldr,extensions
+ *   PI_BAR_SHOW=model,thinking,context,progress,extensions
  *   PI_BAR_THRESHOLDS=70,90
  */
 
@@ -33,39 +33,39 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-type SegmentName = "model" | "thinking" | "context" | "tldr" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
 type SerializedStatusFilter =
 	| { mode: "all"; hidden: string[] }
 	| { mode: "only"; shown: string[] };
-type TldrActivityType =
+type ProgressActivityType =
 	| "user_message"
 	| "assistant_update"
 	| "tool_call"
 	| "tool_result"
 	| "assistant_final"
 	| "assistant_failure";
-type TldrDisplayPriority = "immediate" | "normal" | "final";
-type TldrActivity = {
+type ProgressDisplayPriority = "immediate" | "normal" | "final";
+type ProgressActivity = {
 	index: number;
-	activityType: TldrActivityType;
-	displayPriority: TldrDisplayPriority;
+	activityType: ProgressActivityType;
+	displayPriority: ProgressDisplayPriority;
 	text: string;
 	toolCallId?: string;
 };
-type TldrCheckpoint = {
+type ProgressCheckpoint = {
 	activityIndex: number;
-	displayPriority: TldrDisplayPriority;
+	displayPriority: ProgressDisplayPriority;
 	text: string;
 };
-type TldrCheckpointJob = {
+type ProgressCheckpointJob = {
 	activityIndex: number;
-	displayPriority: TldrDisplayPriority;
+	displayPriority: ProgressDisplayPriority;
 	runId: number;
 };
-type TldrModelPreference = { provider: string; id: string };
+type ProgressModelPreference = { provider: string; id: string };
 type FastModelAuth = {
 	model: Parameters<typeof complete>[0];
 	apiKey: string;
@@ -73,7 +73,10 @@ type FastModelAuth = {
 };
 
 const STATUS_FILTER_ENTRY_TYPE = "pi-bar-status-filter";
-const SETTINGS_TLDR_KEY = "tldr";
+const SETTINGS_PROGRESS_KEY = "progress";
+// Legacy settings/env names. The `tldr` keys remain accepted so existing user
+// configs continue to work after the rename to "progress updates".
+const LEGACY_SETTINGS_TLDR_KEY = "tldr";
 const SETTINGS_BAR_KEY = "bar";
 const MAX_ACTIVITY_TEXT_CHARS = 800;
 const MAX_USER_TEXT_CHARS = 700;
@@ -84,10 +87,10 @@ const MAX_FINAL_TEXT_CHARS = 700;
 const MAX_RETAINED_RAW_ACTIVITIES = 128;
 const ANSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 const MAX_CONTEXT_CHECKPOINTS = 8;
-const TLDR_MAX_TOKENS = 120;
-const TLDR_REQUEST_TIMEOUT_MS = 2_000;
-const TLDR_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
-const TLDR_TARGET_SUMMARY_CHARS = 60;
+const PROGRESS_MAX_TOKENS = 120;
+const PROGRESS_REQUEST_TIMEOUT_MS = 2_000;
+const PROGRESS_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
+const PROGRESS_TARGET_SUMMARY_CHARS = 60;
 // Burst debouncing on the generation side: coalesce rapid-fire activities into
 // one model call. Quiet window catches short bursts; max wait surfaces progress
 // during continuous activity.
@@ -97,7 +100,7 @@ const NORMAL_CHECKPOINT_QUIET_MS = 1_500;
 const NORMAL_CHECKPOINT_MAX_WAIT_MS = 2_500;
 // Defensive ceiling: even if the model ignores the length instruction, never
 // blast a large payload into the footer.
-const MAX_SAFE_TLDR_CHARS = 240;
+const MAX_SAFE_PROGRESS_CHARS = 240;
 const CONFIG_PATH =
 	process.env.PI_BAR_CONFIG ?? join(homedir(), ".pi", "agent", "pi-bar.json");
 
@@ -105,7 +108,7 @@ const DEFAULT_SEGMENTS: SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
-	"tldr",
+	"progress",
 	"extensions",
 ];
 const DEFAULT_WARNING_THRESHOLD = 70;
@@ -168,11 +171,14 @@ function parseSegments(): SegmentName[] {
 	const raw = process.env.PI_BAR_SHOW;
 	if (!raw) return DEFAULT_SEGMENTS;
 
+	// `tldr` is the legacy segment name, kept working as an alias so existing
+	// PI_BAR_SHOW configs do not break after the rename to "progress".
 	const requested = raw
 		.split(",")
 		.map((segment) => segment.trim().toLowerCase())
+		.map((segment) => (segment === "tldr" ? "progress" : segment))
 		.filter((segment): segment is SegmentName =>
-			["model", "thinking", "context", "tldr", "extensions"].includes(segment),
+			["model", "thinking", "context", "progress", "extensions"].includes(segment),
 		);
 
 	return requested.length > 0 ? requested : DEFAULT_SEGMENTS;
@@ -206,7 +212,7 @@ function parseThresholds(): { warningThreshold: number; errorThreshold: number }
 	};
 }
 
-function parseTldrModelSpec(value: string): TldrModelPreference | undefined {
+function parseProgressModelSpec(value: string): ProgressModelPreference | undefined {
 	const trimmed = value.trim();
 	if (!trimmed || trimmed === "auto") return undefined;
 	const separator = trimmed.indexOf("/");
@@ -217,51 +223,64 @@ function parseTldrModelSpec(value: string): TldrModelPreference | undefined {
 function settingsModelValue(settings: Record<string, unknown>): string | undefined {
 	const bar = settings[SETTINGS_BAR_KEY];
 	if (bar && typeof bar === "object" && !Array.isArray(bar)) {
-		const value = (bar as Record<string, unknown>).tldrModel;
+		const record = bar as Record<string, unknown>;
+		// Canonical key after rename. Falls through to legacy `tldrModel` so old
+		// settings still work without manual migration.
+		if (typeof record.progressModel === "string") return record.progressModel;
+		if (typeof record.tldrModel === "string") return record.tldrModel;
+	}
+
+	const progressSection = settings[SETTINGS_PROGRESS_KEY];
+	if (progressSection && typeof progressSection === "object" && !Array.isArray(progressSection)) {
+		const value = (progressSection as Record<string, unknown>).model;
 		if (typeof value === "string") return value;
 	}
 
-	const tldr = settings[SETTINGS_TLDR_KEY];
-	if (tldr && typeof tldr === "object" && !Array.isArray(tldr)) {
-		const value = (tldr as Record<string, unknown>).model;
+	const legacy = settings[LEGACY_SETTINGS_TLDR_KEY];
+	if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
+		const value = (legacy as Record<string, unknown>).model;
 		if (typeof value === "string") return value;
 	}
 
 	return undefined;
 }
 
-function resolveTldrModelPreference(cwd: string): TldrModelPreference | undefined {
-	const envModel = process.env.PI_BAR_TLDR_MODEL;
-	if (envModel) return parseTldrModelSpec(envModel);
+function resolveProgressModelPreference(cwd: string): ProgressModelPreference | undefined {
+	// PI_BAR_PROGRESS_MODEL is the canonical env var. PI_BAR_TLDR_MODEL is
+	// honored as a backwards-compat alias for users who set it before the
+	// rename.
+	const envModel = process.env.PI_BAR_PROGRESS_MODEL ?? process.env.PI_BAR_TLDR_MODEL;
+	if (envModel) return parseProgressModelSpec(envModel);
 
 	const settings = SettingsManager.create(cwd);
 	const projectModel = settingsModelValue(
 		settings.getProjectSettings() as Record<string, unknown>,
 	);
-	if (projectModel !== undefined) return parseTldrModelSpec(projectModel);
+	if (projectModel !== undefined) return parseProgressModelSpec(projectModel);
 
 	const globalModel = settingsModelValue(
 		settings.getGlobalSettings() as Record<string, unknown>,
 	);
-	return globalModel ? parseTldrModelSpec(globalModel) : undefined;
+	return globalModel ? parseProgressModelSpec(globalModel) : undefined;
 }
 
-// Fallback order optimizes for low latency + low cost first. The TLDR path does
-// not need reasoning quality; codex/gpt-5.4-mini is fastest in practice.
-const FAST_TLDR_MODELS: readonly TldrModelPreference[] = [
+// Fallback order optimizes for low latency + low cost first. The progress
+// update path does not need reasoning quality; codex/gpt-5.4-mini is fastest
+// in practice.
+const FAST_PROGRESS_MODELS: readonly ProgressModelPreference[] = [
 	{ provider: "openai-codex", id: "gpt-5.4-mini" },
 	{ provider: "openai-codex", id: "gpt-5.3-codex-spark" },
 	{ provider: "anthropic", id: "claude-haiku-4-5" },
 	{ provider: "anthropic", id: "claude-haiku-4-5-20251001" },
 ];
 
-function formatTldrModelKey(model: TldrModelPreference): string {
+function formatProgressModelKey(model: ProgressModelPreference): string {
 	return `${model.provider}/${model.id}`;
 }
 
 async function getModelAuth(
 	ctx: ExtensionContext,
-	preference: TldrModelPreference,
+	preference: ProgressModelPreference,
 ): Promise<FastModelAuth | undefined> {
 	const model = ctx.modelRegistry.find(preference.provider, preference.id);
 	if (!model) return undefined;
@@ -272,17 +291,17 @@ async function getModelAuth(
 		: undefined;
 }
 
-async function getFastTldrModelAuth(
+async function getFastProgressModelAuth(
 	ctx: ExtensionContext,
-	configuredModel?: TldrModelPreference,
+	configuredModel?: ProgressModelPreference,
 ): Promise<FastModelAuth | undefined> {
 	if (configuredModel) {
 		const configuredAuth = await getModelAuth(ctx, configuredModel);
 		if (configuredAuth) return configuredAuth;
 	}
 
-	for (const candidate of FAST_TLDR_MODELS) {
-		if (configuredModel && formatTldrModelKey(candidate) === formatTldrModelKey(configuredModel)) {
+	for (const candidate of FAST_PROGRESS_MODELS) {
+		if (configuredModel && formatProgressModelKey(candidate) === formatProgressModelKey(configuredModel)) {
 			continue;
 		}
 		const auth = await getModelAuth(ctx, candidate);
@@ -450,16 +469,16 @@ function extractTextContent(content: readonly unknown[] | undefined): string | u
 	return compacted.length > 0 ? compacted : undefined;
 }
 
-class TldrFactCollector {
+class ProgressFactCollector {
 	private nextIndex = 1;
-	private readonly activities: TldrActivity[] = [];
+	private readonly activities: ProgressActivity[] = [];
 
 	resetConversation(): void {
 		this.nextIndex = 1;
 		this.activities.splice(0);
 	}
 
-	recordUserMessage(prompt: string): TldrActivity {
+	recordUserMessage(prompt: string): ProgressActivity {
 		return this.addActivity(
 			"user_message",
 			"immediate",
@@ -467,7 +486,7 @@ class TldrFactCollector {
 		);
 	}
 
-	recordAssistantUpdate(message: unknown): TldrActivity | undefined {
+	recordAssistantUpdate(message: unknown): ProgressActivity | undefined {
 		if (!message || typeof message !== "object") return undefined;
 		const record = message as Record<string, unknown>;
 		if (record.role !== "assistant") return undefined;
@@ -492,7 +511,7 @@ class TldrFactCollector {
 		toolName: string;
 		input?: Record<string, unknown>;
 		toolCallId?: string;
-	}): TldrActivity {
+	}): ProgressActivity {
 		return this.addActivity(
 			"tool_call",
 			"normal",
@@ -508,7 +527,7 @@ class TldrFactCollector {
 		content?: readonly unknown[];
 		details?: unknown;
 		toolCallId?: string;
-	}): TldrActivity {
+	}): ProgressActivity {
 		const isError = Boolean(event.isError);
 		const resultText = summarizeToolResult(
 			event.toolName,
@@ -540,7 +559,7 @@ class TldrFactCollector {
 		);
 	}
 
-	recordMessageEnd(message: unknown): TldrActivity | "emptyFinalStop" | "ignored" {
+	recordMessageEnd(message: unknown): ProgressActivity | "emptyFinalStop" | "ignored" {
 		if (!message || typeof message !== "object") return "ignored";
 		const record = message as Record<string, unknown>;
 		if (record.role !== "assistant") return "ignored";
@@ -569,7 +588,7 @@ class TldrFactCollector {
 			: "ignored";
 	}
 
-	activitiesAfter(previousIndex: number, throughIndex: number): readonly TldrActivity[] {
+	activitiesAfter(previousIndex: number, throughIndex: number): readonly ProgressActivity[] {
 		return this.activities.filter(
 			(activity) => activity.index > previousIndex && activity.index <= throughIndex,
 		);
@@ -591,11 +610,11 @@ class TldrFactCollector {
 	}
 
 	private addActivity(
-		activityType: TldrActivityType,
-		displayPriority: TldrDisplayPriority,
+		activityType: ProgressActivityType,
+		displayPriority: ProgressDisplayPriority,
 		text: string,
 		toolCallId?: string,
-	): TldrActivity {
+	): ProgressActivity {
 		const activity = {
 			index: this.nextIndex,
 			activityType,
@@ -612,25 +631,25 @@ class TldrFactCollector {
 	}
 }
 
-class FooterTldrEngine {
-	private readonly facts = new TldrFactCollector();
-	private configuredModel?: TldrModelPreference;
+class FooterProgressEngine {
+	private readonly facts = new ProgressFactCollector();
+	private configuredModel?: ProgressModelPreference;
 	private runId = 0;
 	private latestAcceptedActivityIndex = 0;
 	private lastRenderedActivityIndex = 0;
 	private lastRenderedText = "";
 	private lastDisplayAt = Number.NEGATIVE_INFINITY;
-	private readonly acceptedCheckpoints: TldrCheckpoint[] = [];
-	private checkpointQueue: TldrCheckpointJob[] = [];
-	private inFlightCheckpoint?: TldrCheckpointJob;
-	private pendingDisplayCheckpoint?: TldrCheckpoint;
+	private readonly acceptedCheckpoints: ProgressCheckpoint[] = [];
+	private checkpointQueue: ProgressCheckpointJob[] = [];
+	private inFlightCheckpoint?: ProgressCheckpointJob;
+	private pendingDisplayCheckpoint?: ProgressCheckpoint;
 	private displayTimer?: ReturnType<typeof setTimeout>;
 	private abortController?: AbortController;
 	private currentText: string | null = null;
 	// Normal-priority bursts wait for a quiet window before triggering a model
 	// call. Pi often emits many rapid activities (e.g. streaming reads); without
-	// debouncing we would hammer the TLDR model for intermediate states.
-	private pendingNormalCheckpoint?: TldrCheckpointJob;
+	// debouncing we would hammer the progress update model for intermediate states.
+	private pendingNormalCheckpoint?: ProgressCheckpointJob;
 	private normalCheckpointTimer?: ReturnType<typeof setTimeout>;
 	private normalCheckpointBurstStartedAt?: number;
 
@@ -641,7 +660,7 @@ class FooterTldrEngine {
 	}
 
 	startSession(cwd: string): void {
-		this.configuredModel = resolveTldrModelPreference(cwd);
+		this.configuredModel = resolveProgressModelPreference(cwd);
 		this.facts.resetConversation();
 		this.startFreshRun();
 	}
@@ -652,7 +671,7 @@ class FooterTldrEngine {
 	}
 
 	recordUserMessage(ctx: ExtensionContext, prompt: string): void {
-		// A new user turn replaces the entire visible TLDR context, so wipe both
+		// A new user turn replaces the entire visible progress update context, so wipe both
 		// the rendered text and the prior-turn checkpoint context that feeds the
 		// model. Carrying old checkpoints biased the next turn's phrasing toward
 		// the previous task.
@@ -766,7 +785,7 @@ class FooterTldrEngine {
 
 	private scheduleNormalCheckpoint(
 		ctx: ExtensionContext,
-		job: TldrCheckpointJob,
+		job: ProgressCheckpointJob,
 	): void {
 		this.pendingNormalCheckpoint = job;
 		this.normalCheckpointBurstStartedAt ??= performance.now();
@@ -804,7 +823,7 @@ class FooterTldrEngine {
 		this.pump(ctx);
 	}
 
-	private enqueue(ctx: ExtensionContext, activity: TldrActivity): void {
+	private enqueue(ctx: ExtensionContext, activity: ProgressActivity): void {
 		if (!ctx.hasUI) return;
 		const job = {
 			activityIndex: activity.index,
@@ -868,19 +887,19 @@ class FooterTldrEngine {
 		void this.runCheckpointRequest(ctx, job);
 	}
 
-	private isCurrentJob(job: TldrCheckpointJob): boolean {
+	private isCurrentJob(job: ProgressCheckpointJob): boolean {
 		return job.runId === this.runId && this.inFlightCheckpoint === job;
 	}
 
 	private async runCheckpointRequest(
 		ctx: ExtensionContext,
-		job: TldrCheckpointJob,
+		job: ProgressCheckpointJob,
 	): Promise<void> {
 		let abortController: AbortController | undefined;
 		try {
 			const prompt = this.checkpointPrompt(job);
 			if (!prompt) return;
-			const auth = await getFastTldrModelAuth(ctx, this.configuredModel);
+			const auth = await getFastProgressModelAuth(ctx, this.configuredModel);
 			if (!this.isCurrentJob(job) || !auth) return;
 
 			abortController = new AbortController();
@@ -891,17 +910,17 @@ class FooterTldrEngine {
 				{
 					apiKey: auth.apiKey,
 					headers: auth.headers,
-					maxTokens: TLDR_MAX_TOKENS,
+					maxTokens: PROGRESS_MAX_TOKENS,
 					maxRetries: 0,
 					cacheRetention: "none",
-					timeoutMs: TLDR_REQUEST_TIMEOUT_MS,
+					timeoutMs: PROGRESS_REQUEST_TIMEOUT_MS,
 					signal: abortController.signal,
 				},
 			);
 			if (!this.isCurrentJob(job) || response.stopReason !== "stop") return;
 
 			const rawText = extractTextContent(response.content) ?? "";
-			const text = sanitizeTldrText(rawText);
+			const text = sanitizeProgressText(rawText);
 			if (!text) return;
 			const checkpoint = {
 				activityIndex: job.activityIndex,
@@ -921,7 +940,7 @@ class FooterTldrEngine {
 		}
 	}
 
-	private acceptCheckpoint(checkpoint: TldrCheckpoint): void {
+	private acceptCheckpoint(checkpoint: ProgressCheckpoint): void {
 		this.acceptedCheckpoints.push(checkpoint);
 		if (this.acceptedCheckpoints.length > MAX_CONTEXT_CHECKPOINTS) {
 			this.acceptedCheckpoints.splice(
@@ -935,7 +954,7 @@ class FooterTldrEngine {
 
 	private considerDisplayingCheckpoint(
 		ctx: ExtensionContext,
-		checkpoint: TldrCheckpoint,
+		checkpoint: ProgressCheckpoint,
 	): void {
 		if (checkpoint.activityIndex <= this.lastRenderedActivityIndex) return;
 		if (checkpoint.activityIndex !== this.facts.latestActivityIndex()) return;
@@ -947,7 +966,7 @@ class FooterTldrEngine {
 		}
 
 		const elapsedMs = performance.now() - this.lastDisplayAt;
-		if (elapsedMs >= TLDR_DISPLAY_UPDATE_INTERVAL_MS) {
+		if (elapsedMs >= PROGRESS_DISPLAY_UPDATE_INTERVAL_MS) {
 			this.clearPendingDisplay();
 			this.renderCheckpoint(checkpoint);
 			return;
@@ -961,16 +980,16 @@ class FooterTldrEngine {
 			this.pendingDisplayCheckpoint = undefined;
 			if (!pending || pending.activityIndex !== this.facts.latestActivityIndex()) return;
 			this.renderCheckpoint(pending);
-		}, TLDR_DISPLAY_UPDATE_INTERVAL_MS - elapsedMs);
+		}, PROGRESS_DISPLAY_UPDATE_INTERVAL_MS - elapsedMs);
 	}
 
-	private renderCheckpoint(checkpoint: TldrCheckpoint): void {
+	private renderCheckpoint(checkpoint: ProgressCheckpoint): void {
 		if (checkpoint.activityIndex <= this.lastRenderedActivityIndex) return;
 		if (checkpoint.text === this.lastRenderedText) return;
 		// Skip near-duplicates: a burst of consecutive checkpoints often produces
 		// the same action fragment with only punctuation/casing differences. They
 		// flash visibly in the footer without adding information.
-		if (isNearDuplicateTldr(checkpoint.text, this.lastRenderedText)) {
+		if (isNearDuplicateProgress(checkpoint.text, this.lastRenderedText)) {
 			this.lastRenderedActivityIndex = checkpoint.activityIndex;
 			return;
 		}
@@ -981,7 +1000,7 @@ class FooterTldrEngine {
 		this.requestRender();
 	}
 
-	private checkpointPrompt(job: TldrCheckpointJob): UserMessage | undefined {
+	private checkpointPrompt(job: ProgressCheckpointJob): UserMessage | undefined {
 		const rawActivities = this.facts.activitiesAfter(
 			this.latestAcceptedActivityIndex,
 			job.activityIndex,
@@ -993,13 +1012,13 @@ class FooterTldrEngine {
 				{
 					type: "text",
 					text: [
-						"Prior TLDRs (context only, do not copy phrasing):",
+						"Prior progress updates (context only, do not copy phrasing):",
 						previousCheckpointLines(this.acceptedCheckpoints),
 						"",
 						"New activity to summarize:",
 						...rawActivities.map(formatRawActivity),
 						"",
-						"Write the next TLDR.",
+						"Write the next progress update.",
 					].join("\n"),
 				},
 			],
@@ -1090,11 +1109,12 @@ const BANNED_FIRST_WORDS = [
 	"Find",
 ] as const;
 
-function checkpointSystemPrompt(job: TldrCheckpointJob): string {
-	// Tense + exemplars vary by priority. Final TLDRs describe completed turns;
-	// using -ing examples for final caused all final TLDRs to slip back into
-	// present-progressive even though the literal instruction said past tense.
-	// Immediate TLDRs cover a brand-new user request; they need a rephrase
+function checkpointSystemPrompt(job: ProgressCheckpointJob): string {
+	// Tense + exemplars vary by priority. Final progress updates describe
+	// completed turns; using -ing examples for final caused all of them to slip
+	// back into present-progressive even though the literal instruction said
+	// past tense.
+	// Immediate progress updates cover a brand-new user request; they need a rephrase
 	// directive instead of generic filler like "Continuing with task".
 	let tenseInstruction: string;
 	let goodExamples: string;
@@ -1103,7 +1123,7 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 		tenseInstruction = "Start with a past-tense verb describing what was completed.";
 		goodExamples = [
 			"- Updated footer summary behavior",
-			"- Investigated live TLDR regressions",
+			"- Investigated live progress regressions",
 			"- Refined sanitizer for stray prefixes",
 			"- Wrapped up extension release",
 		].join("\n");
@@ -1113,7 +1133,7 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 			"Rephrase the user's new request as a concise present-progressive task clause. If the request is opaque (e.g. \"continue\", \"go\", \"ok\"), name the carry-over task with a noun (e.g. \"Resuming refactor work\"), not generic filler.";
 		goodExamples = [
 			"- Reviewing footer summary behavior",
-			"- Investigating live TLDR regressions",
+			"- Investigating live progress regressions",
 			"- Refining sanitizer for stray prefixes",
 			"- Preparing extension release",
 			"- Resuming refactor work",
@@ -1123,7 +1143,7 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 		tenseInstruction = "Start with a present-tense -ing verb describing current work.";
 		goodExamples = [
 			"- Reviewing footer summary behavior",
-			"- Investigating live TLDR regressions",
+			"- Investigating live progress regressions",
 			"- Refining sanitizer for stray prefixes",
 			"- Wrapping up extension release",
 		].join("\n");
@@ -1136,7 +1156,7 @@ function checkpointSystemPrompt(job: TldrCheckpointJob): string {
 	// suffixes, file path leaks, and markdown formatting. The HARD CONSTRAINTS
 	// block sits at the tail of the prompt because instruction-following models
 	// give the most weight to the most-recent directives (recency bias).
-	return `Write one plain-English TLDR for a Pi coding agent.
+	return `Write one plain-English progress update for a Pi coding agent.
 Describe the work progress as if a human developer were doing it.
 Focus on the task activity and current outcome, not agent mechanics.
 Do not mention tools, tool calls, prompts, messages, model output, or implementation details.
@@ -1145,11 +1165,11 @@ Do not use file paths, file extensions, code identifiers, package names, or vers
 Do not use backticks, asterisks, underscores, quotes, or any markdown formatting.
 Do not append filler suffixes such as "with success", "successfully", or "completed successfully".
 Do not claim progress or completion that is not present in the activity.
-Use the prior TLDRs for context and the new activity for the update.
+Use the prior progress updates for context and the new activity for the update.
 Summarize the current state of work; do not narrate the history.
 If context is sparse, still summarize the available activity.
 Never ask for more information or say there is not enough context.
-Return one concise status fragment under ${TLDR_TARGET_SUMMARY_CHARS} characters.
+Return one concise status fragment under ${PROGRESS_TARGET_SUMMARY_CHARS} characters.
 Omit subjects like "the agent" or "it".
 Prefer verb + direct object. Include outcome only if important.
 Do not address the user.
@@ -1163,7 +1183,7 @@ Bad examples:
 - Editing extensions/status-footer.ts with success.
 - Reading status-footer file completed successfully.
 - Publishing \`pi-bar@0.3.3\` to npm.
-- Grepping for sanitizeTldrText callers.
+- Grepping for sanitizeProgressText callers.
 - Verifying repository status after commit.
 - Investigating user input responses.
 
@@ -1180,7 +1200,7 @@ function extractStopReason(message: unknown): string | undefined {
 	return typeof stopReason === "string" ? stopReason : undefined;
 }
 
-// Two TLDRs are near-duplicates if their normalized action fragments (lowercase,
+// Two progress updates are near-duplicates if their normalized action fragments (lowercase,
 // punctuation/whitespace collapsed) match. Catches bursts of cosmetic variants
 // like "Editing X." vs "Editing X" vs "editing  x.".
 function normalizedActionFragment(text: string): string {
@@ -1191,25 +1211,25 @@ function normalizedActionFragment(text: string): string {
 		.trim();
 }
 
-function isNearDuplicateTldr(current: string, previous: string): boolean {
+function isNearDuplicateProgress(current: string, previous: string): boolean {
 	if (!previous) return false;
 	return normalizedActionFragment(current) === normalizedActionFragment(previous);
 }
 
-function previousCheckpointLines(checkpoints: readonly TldrCheckpoint[]): string {
+function previousCheckpointLines(checkpoints: readonly ProgressCheckpoint[]): string {
 	if (checkpoints.length === 0) return "none";
 	return checkpoints
 		.slice(-MAX_CONTEXT_CHECKPOINTS)
-		.map((checkpoint) => `- ${sanitizeTldrText(checkpoint.text)}`)
+		.map((checkpoint) => `- ${sanitizeProgressText(checkpoint.text)}`)
 		.join("\n");
 }
 
-function formatRawActivity(activity: TldrActivity): string {
+function formatRawActivity(activity: ProgressActivity): string {
 	return `- ${activity.text}`;
 }
 
 // Strips ANSI/CSI/OSC/DCS/SOS/PM/APC escape sequences from model output before
-// it lands in the terminal. The TLDR text is model-controlled and renders into
+// it lands in the terminal. The progress update text is model-controlled and renders into
 // the footer; the system prompt asking for plain text is not a security
 // boundary, so we defensively remove terminal controls here.
 const ESC_BYTE = 0x1b;
@@ -1315,7 +1335,7 @@ function stripTerminalControls(text: string): string {
 // parrot them; the regex is narrow enough not to clip natural starts like
 // "Activity slowed after retry" or "Checkpointing release state".
 const LEAKED_PREFIX_PATTERN =
-	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary)\s*[:.\-—–]\s*)+/i;
+	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary|progress\s+update|progress)\s*[:.\-—–]\s*)+/i;
 const LEADING_PUNCT_PATTERN = /^[\s\-—–•*:#.,;]+/;
 const TRAILING_PUNCT_PATTERN = /[\s\-—–•*:#.,;]+$/;
 
@@ -1369,6 +1389,15 @@ const DANGLING_PREP_CHAIN_PATTERN =
 // "Reviewing for image update". Collapse the bare verb+prep into just the verb.
 const VERB_BARE_PREP_PATTERN =
 	/\b(Reviewing|Investigating|Updating|Refining|Exploring|Fixing|Implementing|Bumping|Releasing|Preparing|Drafting|Resuming|Pulling|Surveying|Recording)\s+(?:for|in|on|with|after|before|to|at|as|of|by|from)\s+/gi;
+// Identifier strip removes version numbers like "0.3.4" but can leave stranded
+// release adjectives behind: "Released latest of package" was "Released latest
+// 0.3.4 of package"; "Released new with X" was "Released new 0.3.4 with X".
+// The chain pattern keeps the noun phrase that followed the version. The
+// trailing pattern handles bare "... new" or "... latest" tails.
+const RELEASE_FRAGMENT_CHAIN_PATTERN =
+	/\b(Released|Releasing|Bumped|Bumping|Published|Publishing|Updated|Updating|Shipped|Shipping)\s+(?:new|latest|version|update)\s+(?:of|with|to|and|in|on|for)\s+/gi;
+const RELEASE_FRAGMENT_TRAILING_PATTERN =
+	/\s+(?:new|latest|version|update)\s*(?:of|with|to|and|in|on)?\s*[.!?,;:]?\s*$/i;
 
 function stripDanglingPrepositions(text: string): string {
 	let cleaned = text;
@@ -1376,14 +1405,16 @@ function stripDanglingPrepositions(text: string): string {
 	do {
 		previous = cleaned;
 		cleaned = cleaned.replace(VERB_BARE_PREP_PATTERN, "$1 ");
+		cleaned = cleaned.replace(RELEASE_FRAGMENT_CHAIN_PATTERN, "$1 ");
 		cleaned = cleaned.replace(DANGLING_PREP_CHAIN_PATTERN, "$2");
+		cleaned = cleaned.replace(RELEASE_FRAGMENT_TRAILING_PATTERN, "").trim();
 		cleaned = cleaned.replace(DANGLING_TRAILING_PREP_PATTERN, "").trim();
 	} while (cleaned !== previous && cleaned.length > 0);
 	return cleaned;
 }
 
 // Last-resort fallback when the model ignored the allow-list and started the
-// TLDR with a banned tool-narration verb. The map preserves tense (present
+// progress update with a banned tool-narration verb. The map preserves tense (present
 // vs past). Case of the first letter follows the original word.
 const BANNED_FIRST_WORD_REWRITES: Record<string, string> = {
 	Reading: "Reviewing",
@@ -1437,7 +1468,7 @@ function rewriteBannedFirstWord(text: string): string {
 	const original = match[1];
 	const replacement = BANNED_FIRST_WORD_REWRITES[original];
 	if (!replacement) return text;
-	// Preserve lowercase-start TLDRs (rare but possible) by matching original case.
+	// Preserve lowercase-start outputs (rare but possible) by matching original case.
 	const cased =
 		original[0] === original[0].toLowerCase()
 			? replacement[0].toLowerCase() + replacement.slice(1)
@@ -1466,9 +1497,9 @@ function stripSuccessSuffix(text: string): string {
 	return cleaned;
 }
 
-function sanitizeTldrText(
+function sanitizeProgressText(
 	text: string,
-	maxChars = MAX_SAFE_TLDR_CHARS,
+	maxChars = MAX_SAFE_PROGRESS_CHARS,
 ): string {
 	const stripped = stripTerminalControls(text);
 	const withoutMarkdown = stripMarkdownFormatting(stripped);
@@ -1576,7 +1607,7 @@ export default function (pi: ExtensionAPI) {
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
 	const seenStatusKeys = new Set<string>();
 	const refresh = () => requestRender?.();
-	const tldr = new FooterTldrEngine(refresh);
+	const progress = new FooterProgressEngine(refresh);
 	const restoreStatusFilter = (ctx: ExtensionContext) => {
 		let restoredFilter = readGlobalStatusFilter();
 		if (!restoredFilter) {
@@ -1764,32 +1795,32 @@ export default function (pi: ExtensionAPI) {
 	pi.on("thinking_level_select", async () => refresh());
 	pi.on("turn_end", async () => refresh());
 	pi.on("before_agent_start", async (event, ctx) => {
-		tldr.recordUserMessage(ctx, event.prompt);
+		progress.recordUserMessage(ctx, event.prompt);
 	});
 	pi.on("message_update", async (event, ctx) => {
-		tldr.recordAssistantUpdate(ctx, event.message);
+		progress.recordAssistantUpdate(ctx, event.message);
 	});
 	pi.on("tool_call", async (event, ctx) => {
-		tldr.recordToolCall(ctx, event);
+		progress.recordToolCall(ctx, event);
 	});
 	pi.on("tool_result", async (event, ctx) => {
-		tldr.recordToolResult(ctx, event);
+		progress.recordToolResult(ctx, event);
 	});
 	pi.on("message_end", async (event, ctx) => {
-		tldr.recordMessageEnd(ctx, event.message);
+		progress.recordMessageEnd(ctx, event.message);
 		refresh();
 	});
 	pi.on("session_before_tree", async () => {
-		tldr.shutdown();
+		progress.shutdown();
 	});
 	pi.on("session_tree", async (_event, ctx) => {
-		tldr.startSession(ctx.cwd);
+		progress.startSession(ctx.cwd);
 		restoreStatusFilter(ctx);
 		refresh();
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		tldr.startSession(ctx.cwd);
+		progress.startSession(ctx.cwd);
 		restoreStatusFilter(ctx);
 
 		if (!ctx.hasUI) return;
@@ -1823,13 +1854,13 @@ export default function (pi: ExtensionAPI) {
 					const contextText = usage
 						? `${usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "—%"} / ${formatTokens(usage.contextWindow)}`
 						: "—";
-					const tldrText = tldr.text();
+					const progressText = progress.text();
 
 					const segmentRenderers: Record<SegmentName, string | null> = {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
-						tldr: tldrText ? theme.fg("muted", tldrText) : null,
+						progress: progressText ? theme.fg("muted", progressText) : null,
 						extensions: extensionStatuses ? theme.fg("muted", extensionStatuses) : null,
 					};
 
@@ -1846,7 +1877,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		tldr.shutdown();
+		progress.shutdown();
 		if (ctx.hasUI) ctx.ui.setFooter(undefined);
 	});
 }

@@ -1,7 +1,7 @@
 {
   "name": "pi-bar",
-  "version": "0.3.29",
-  "description": "Pi footer/statusline showing active model, thinking level, context pressure, live TLDR, and extension statuses.",
+  "version": "0.3.30",
+  "description": "Pi footer/statusline showing active model, thinking level, context pressure, live progress updates, and extension statuses.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -14,6 +14,7 @@
     "thinking",
     "context",
     "context-window",
+    "progress",
     "tldr"
   ],
   "license": "MIT",
@@ -51,6 +52,6 @@
     "extensions": [
       "./extensions/status-footer.ts"
     ],
-    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.29/assets/screenshot-yellow.png"
+    "image": "https://cdn.jsdelivr.net/npm/pi-bar@0.3.30/assets/screenshot-yellow.png"
   }
 }

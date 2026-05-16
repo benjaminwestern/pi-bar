@@ -1,5 +1,5 @@
 /**
- * VENDORED COPY of pure TLDR logic from `extensions/status-footer.ts`.
+ * VENDORED COPY of pure progress-update logic from `extensions/status-footer.ts`.
  *
  * This is a backtest harness, not shipped with the extension. Keep in sync
  * manually when status-footer.ts changes. The intent is to replay past pi
@@ -7,9 +7,9 @@
  * without pulling in pi-tui/pi-ai/pi-coding-agent peer dependencies.
  *
  * What is intentionally NOT vendored:
- *  - FooterTldrEngine timing/abort plumbing (we re-implement a simulated
+ *  - FooterProgressEngine timing/abort plumbing (we re-implement a simulated
  *    scheduler in run.ts using event timestamps).
- *  - getFastTldrModelAuth (live model auth is done via fetch in run.ts).
+ *  - getFastProgressModelAuth (live model auth is done via fetch in run.ts).
  */
 
 export const MAX_ACTIVITY_TEXT_CHARS = 800;
@@ -20,32 +20,32 @@ export const MAX_TOOL_RESULT_ERROR_CHARS = 320;
 export const MAX_FINAL_TEXT_CHARS = 700;
 export const MAX_RETAINED_RAW_ACTIVITIES = 128;
 export const MAX_CONTEXT_CHECKPOINTS = 8;
-export const TLDR_TARGET_SUMMARY_CHARS = 60;
-export const MAX_SAFE_TLDR_CHARS = 240;
-export const TLDR_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
+export const PROGRESS_TARGET_SUMMARY_CHARS = 60;
+export const MAX_SAFE_PROGRESS_CHARS = 240;
+export const PROGRESS_DISPLAY_UPDATE_INTERVAL_MS = 1_200;
 export const NORMAL_CHECKPOINT_QUIET_MS = 1_500;
 export const NORMAL_CHECKPOINT_MAX_WAIT_MS = 2_500;
 
 const ANSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
-export type TldrActivityType =
+export type ProgressActivityType =
 	| "user_message"
 	| "assistant_update"
 	| "tool_call"
 	| "tool_result"
 	| "assistant_final"
 	| "assistant_failure";
-export type TldrDisplayPriority = "immediate" | "normal" | "final";
-export type TldrActivity = {
+export type ProgressDisplayPriority = "immediate" | "normal" | "final";
+export type ProgressActivity = {
 	index: number;
-	activityType: TldrActivityType;
-	displayPriority: TldrDisplayPriority;
+	activityType: ProgressActivityType;
+	displayPriority: ProgressDisplayPriority;
 	text: string;
 	toolCallId?: string;
 };
-export type TldrCheckpoint = {
+export type ProgressCheckpoint = {
 	activityIndex: number;
-	displayPriority: TldrDisplayPriority;
+	displayPriority: ProgressDisplayPriority;
 	text: string;
 };
 
@@ -190,16 +190,16 @@ export function extractTextContent(content: readonly unknown[] | undefined): str
 	return compacted.length > 0 ? compacted : undefined;
 }
 
-export class TldrFactCollector {
+export class ProgressFactCollector {
 	private nextIndex = 1;
-	readonly activities: TldrActivity[] = [];
+	readonly activities: ProgressActivity[] = [];
 
 	resetConversation(): void {
 		this.nextIndex = 1;
 		this.activities.splice(0);
 	}
 
-	recordUserMessage(prompt: string): TldrActivity {
+	recordUserMessage(prompt: string): ProgressActivity {
 		return this.addActivity(
 			"user_message",
 			"immediate",
@@ -207,7 +207,7 @@ export class TldrFactCollector {
 		);
 	}
 
-	recordAssistantUpdate(message: unknown): TldrActivity | undefined {
+	recordAssistantUpdate(message: unknown): ProgressActivity | undefined {
 		if (!message || typeof message !== "object") return undefined;
 		const record = message as Record<string, unknown>;
 		if (record.role !== "assistant") return undefined;
@@ -226,7 +226,7 @@ export class TldrFactCollector {
 		toolName: string;
 		input?: Record<string, unknown>;
 		toolCallId?: string;
-	}): TldrActivity {
+	}): ProgressActivity {
 		return this.addActivity(
 			"tool_call",
 			"normal",
@@ -241,7 +241,7 @@ export class TldrFactCollector {
 		isError?: boolean;
 		content?: readonly unknown[];
 		toolCallId?: string;
-	}): TldrActivity {
+	}): ProgressActivity {
 		const isError = Boolean(event.isError);
 		const resultText = summarizeToolResult(
 			event.toolName,
@@ -265,7 +265,7 @@ export class TldrFactCollector {
 		);
 	}
 
-	recordMessageEnd(message: unknown): TldrActivity | "emptyFinalStop" | "ignored" {
+	recordMessageEnd(message: unknown): ProgressActivity | "emptyFinalStop" | "ignored" {
 		if (!message || typeof message !== "object") return "ignored";
 		const record = message as Record<string, unknown>;
 		if (record.role !== "assistant") return "ignored";
@@ -291,7 +291,7 @@ export class TldrFactCollector {
 			: "ignored";
 	}
 
-	activitiesAfter(previousIndex: number, throughIndex: number): readonly TldrActivity[] {
+	activitiesAfter(previousIndex: number, throughIndex: number): readonly ProgressActivity[] {
 		return this.activities.filter((a) => a.index > previousIndex && a.index <= throughIndex);
 	}
 
@@ -309,12 +309,12 @@ export class TldrFactCollector {
 	}
 
 	private addActivity(
-		activityType: TldrActivityType,
-		displayPriority: TldrDisplayPriority,
+		activityType: ProgressActivityType,
+		displayPriority: ProgressDisplayPriority,
 		text: string,
 		toolCallId?: string,
-	): TldrActivity {
-		const activity: TldrActivity = {
+	): ProgressActivity {
+		const activity: ProgressActivity = {
 			index: this.nextIndex,
 			activityType,
 			displayPriority,
@@ -409,7 +409,7 @@ export const BANNED_FIRST_WORDS = [
 	"Find",
 ] as const;
 
-export function checkpointSystemPrompt(displayPriority: TldrDisplayPriority): string {
+export function checkpointSystemPrompt(displayPriority: ProgressDisplayPriority): string {
 	let tenseInstruction: string;
 	let goodExamples: string;
 	let allowedFirstWords: readonly string[];
@@ -417,7 +417,7 @@ export function checkpointSystemPrompt(displayPriority: TldrDisplayPriority): st
 		tenseInstruction = "Start with a past-tense verb describing what was completed.";
 		goodExamples = [
 			"- Updated footer summary behavior",
-			"- Investigated live TLDR regressions",
+			"- Investigated live progress regressions",
 			"- Refined sanitizer for stray prefixes",
 			"- Wrapped up extension release",
 		].join("\n");
@@ -427,7 +427,7 @@ export function checkpointSystemPrompt(displayPriority: TldrDisplayPriority): st
 			'Rephrase the user\'s new request as a concise present-progressive task clause. If the request is opaque (e.g. "continue", "go", "ok"), name the carry-over task with a noun (e.g. "Resuming refactor work"), not generic filler.';
 		goodExamples = [
 			"- Reviewing footer summary behavior",
-			"- Investigating live TLDR regressions",
+			"- Investigating live progress regressions",
 			"- Refining sanitizer for stray prefixes",
 			"- Preparing extension release",
 			"- Resuming refactor work",
@@ -437,13 +437,13 @@ export function checkpointSystemPrompt(displayPriority: TldrDisplayPriority): st
 		tenseInstruction = "Start with a present-tense -ing verb describing current work.";
 		goodExamples = [
 			"- Reviewing footer summary behavior",
-			"- Investigating live TLDR regressions",
+			"- Investigating live progress regressions",
 			"- Refining sanitizer for stray prefixes",
 			"- Wrapping up extension release",
 		].join("\n");
 		allowedFirstWords = ALLOWED_FIRST_WORDS_PROGRESSIVE;
 	}
-	return `Write one plain-English TLDR for a Pi coding agent.
+	return `Write one plain-English progress update for a Pi coding agent.
 Describe the work progress as if a human developer were doing it.
 Focus on the task activity and current outcome, not agent mechanics.
 Do not mention tools, tool calls, prompts, messages, model output, or implementation details.
@@ -452,11 +452,11 @@ Do not use file paths, file extensions, code identifiers, package names, or vers
 Do not use backticks, asterisks, underscores, quotes, or any markdown formatting.
 Do not append filler suffixes such as "with success", "successfully", or "completed successfully".
 Do not claim progress or completion that is not present in the activity.
-Use the prior TLDRs for context and the new activity for the update.
+Use the prior progress updates for context and the new activity for the update.
 Summarize the current state of work; do not narrate the history.
 If context is sparse, still summarize the available activity.
 Never ask for more information or say there is not enough context.
-Return one concise status fragment under ${TLDR_TARGET_SUMMARY_CHARS} characters.
+Return one concise status fragment under ${PROGRESS_TARGET_SUMMARY_CHARS} characters.
 Omit subjects like "the agent" or "it".
 Prefer verb + direct object. Include outcome only if important.
 Do not address the user.
@@ -470,7 +470,7 @@ Bad examples:
 - Editing extensions/status-footer.ts with success.
 - Reading status-footer file completed successfully.
 - Publishing \`pi-bar@0.3.3\` to npm.
-- Grepping for sanitizeTldrText callers.
+- Grepping for sanitizeProgressText callers.
 - Verifying repository status after commit.
 - Investigating user input responses.
 
@@ -480,34 +480,34 @@ HARD CONSTRAINTS (apply last; override anything above that conflicts):
 - ${tenseInstruction}`;
 }
 
-export function previousCheckpointLines(checkpoints: readonly TldrCheckpoint[]): string {
+export function previousCheckpointLines(checkpoints: readonly ProgressCheckpoint[]): string {
 	if (checkpoints.length === 0) return "none";
 	return checkpoints
 		.slice(-MAX_CONTEXT_CHECKPOINTS)
-		.map((c) => `- ${sanitizeTldrText(c.text)}`)
+		.map((c) => `- ${sanitizeProgressText(c.text)}`)
 		.join("\n");
 }
 
-export function formatRawActivity(activity: TldrActivity): string {
+export function formatRawActivity(activity: ProgressActivity): string {
 	return `- ${activity.text}`;
 }
 
 export function buildCheckpointUserPrompt(
-	accepted: readonly TldrCheckpoint[],
-	rawActivities: readonly TldrActivity[],
+	accepted: readonly ProgressCheckpoint[],
+	rawActivities: readonly ProgressActivity[],
 ): string {
 	return [
-		"Prior TLDRs (context only, do not copy phrasing):",
+		"Prior progress updates (context only, do not copy phrasing):",
 		previousCheckpointLines(accepted),
 		"",
 		"New activity to summarize:",
 		...rawActivities.map(formatRawActivity),
 		"",
-		"Write the next TLDR.",
+		"Write the next progress update.",
 	].join("\n");
 }
 
-// --- TLDR sanitization (post-model) ---
+// --- Progress update sanitization (post-model) ---
 const ESC_BYTE = 0x1b;
 const BEL_BYTE = 0x07;
 const ST_BYTE = 0x9c;
@@ -584,7 +584,7 @@ function stripTerminalControls(text: string): string {
 	return stripped.replace(/\s+/gu, " ").trim();
 }
 const LEAKED_PREFIX_PATTERN =
-	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary)\s*[:.\-—–]\s*)+/i;
+	/^\s*(?:[-*•]\s*)?(?:(?:through\s+activity|activity|checkpoint)\s+\d+\s*[:.\-—–]\s*|(?:tldr|summary|progress\s+update|progress)\s*[:.\-—–]\s*)+/i;
 const LEADING_PUNCT_PATTERN = /^[\s\-—–•*:#.,;]+/;
 const TRAILING_PUNCT_PATTERN = /[\s\-—–•*:#.,;]+$/;
 
@@ -636,7 +636,7 @@ function stripSuccessSuffix(text: string): string {
 	return cleaned;
 }
 
-export function isNearDuplicateTldr(current: string, previous: string): boolean {
+export function isNearDuplicateProgress(current: string, previous: string): boolean {
 	if (!previous) return false;
 	const norm = (s: string) =>
 		s.toLowerCase().replace(/[\p{P}\p{S}]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -649,6 +649,10 @@ const DANGLING_PREP_CHAIN_PATTERN =
 	/\b(to|at|as|of|by|from|version|v)\s+(for|in|on|with|from|after|before|during|to|at|as|of|by|and|but|or)\b/gi;
 const VERB_BARE_PREP_PATTERN =
 	/\b(Reviewing|Investigating|Updating|Refining|Exploring|Fixing|Implementing|Bumping|Releasing|Preparing|Drafting|Resuming|Pulling|Surveying|Recording)\s+(?:for|in|on|with|after|before|to|at|as|of|by|from)\s+/gi;
+const RELEASE_FRAGMENT_CHAIN_PATTERN =
+	/\b(Released|Releasing|Bumped|Bumping|Published|Publishing|Updated|Updating|Shipped|Shipping)\s+(?:new|latest|version|update)\s+(?:of|with|to|and|in|on|for)\s+/gi;
+const RELEASE_FRAGMENT_TRAILING_PATTERN =
+	/\s+(?:new|latest|version|update)\s*(?:of|with|to|and|in|on)?\s*[.!?,;:]?\s*$/i;
 
 function stripDanglingPrepositions(text: string): string {
 	let cleaned = text;
@@ -656,7 +660,9 @@ function stripDanglingPrepositions(text: string): string {
 	do {
 		previous = cleaned;
 		cleaned = cleaned.replace(VERB_BARE_PREP_PATTERN, "$1 ");
+		cleaned = cleaned.replace(RELEASE_FRAGMENT_CHAIN_PATTERN, "$1 ");
 		cleaned = cleaned.replace(DANGLING_PREP_CHAIN_PATTERN, "$2");
+		cleaned = cleaned.replace(RELEASE_FRAGMENT_TRAILING_PATTERN, "").trim();
 		cleaned = cleaned.replace(DANGLING_TRAILING_PREP_PATTERN, "").trim();
 	} while (cleaned !== previous && cleaned.length > 0);
 	return cleaned;
@@ -721,7 +727,7 @@ function rewriteBannedFirstWord(text: string): string {
 	return cased + text.slice(original.length);
 }
 
-export function sanitizeTldrText(text: string, maxChars = MAX_SAFE_TLDR_CHARS): string {
+export function sanitizeProgressText(text: string, maxChars = MAX_SAFE_PROGRESS_CHARS): string {
 	const stripped = stripTerminalControls(text);
 	const withoutMarkdown = stripMarkdownFormatting(stripped);
 	const withoutScaffolding = stripLeakedScaffolding(withoutMarkdown) || withoutMarkdown;
