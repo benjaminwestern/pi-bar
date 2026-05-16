@@ -30,14 +30,14 @@ import { fileURLToPath } from "node:url";
 import {
 	buildCheckpointUserPrompt,
 	checkpointSystemPrompt,
-	isNearDuplicateTldr,
+	isNearDuplicateProgress,
 	MAX_CONTEXT_CHECKPOINTS,
 	NORMAL_CHECKPOINT_MAX_WAIT_MS,
 	NORMAL_CHECKPOINT_QUIET_MS,
-	sanitizeTldrText,
-	TldrFactCollector,
-	type TldrCheckpoint,
-	type TldrDisplayPriority,
+	ProgressFactCollector,
+	sanitizeProgressText,
+	type ProgressCheckpoint,
+	type ProgressDisplayPriority,
 } from "./tldr-logic.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -66,7 +66,7 @@ type JsonlEvent = {
 
 type CheckpointTrace = {
 	t: number; // event index
-	priority: TldrDisplayPriority;
+	priority: ProgressDisplayPriority;
 	trigger: string;
 	rawCount: number;
 	userPrompt: string;
@@ -138,7 +138,7 @@ type ReplayPlan = {
 	ts: number; // ms
 	// "fact" = record but do not trigger a checkpoint (matches engine >=0.3.27
 	// behavior for tool_call).
-	priority: TldrDisplayPriority | "fact";
+	priority: ProgressDisplayPriority | "fact";
 	trigger: string;
 };
 
@@ -244,7 +244,7 @@ function planFromEvents(events: JsonlEvent[]): ReplayPlan[] {
 }
 
 /**
- * Simulated checkpoint scheduler that mirrors FooterTldrEngine's enqueue logic
+ * Simulated checkpoint scheduler that mirrors FooterProgressEngine's enqueue logic
  * using historical event timestamps as the clock.
  *
  *  - immediate: cancels normal/in-flight, fires now
@@ -265,8 +265,8 @@ async function replay(
 		onCheckpoint?: (t: CheckpointTrace) => void;
 	},
 ): Promise<CheckpointTrace[]> {
-	const facts = new TldrFactCollector();
-	const accepted: TldrCheckpoint[] = [];
+	const facts = new ProgressFactCollector();
+	const accepted: ProgressCheckpoint[] = [];
 	const traces: CheckpointTrace[] = [];
 	let latestAcceptedIndex = 0;
 
@@ -275,7 +275,7 @@ async function replay(
 		| undefined;
 
 	const fireCheckpoint = async (
-		priority: TldrDisplayPriority,
+		priority: ProgressDisplayPriority,
 		activityIndex: number,
 		trigger: string,
 	) => {
@@ -303,7 +303,7 @@ async function replay(
 				);
 				trace.model = options.model;
 				trace.latencyMs = Date.now() - start;
-				trace.tldr = sanitizeTldrText(raw);
+				trace.tldr = sanitizeProgressText(raw);
 			} catch (err) {
 				trace.error = String((err as Error).message ?? err);
 				trace.latencyMs = Date.now() - start;
@@ -317,7 +317,7 @@ async function replay(
 			// Mirror engine: don't "render" near-duplicates; mark them to surface
 			// debouncing wins in the trace.
 			const prev = accepted[accepted.length - 1]?.text ?? "";
-			if (isNearDuplicateTldr(trace.tldr, prev)) {
+			if (isNearDuplicateProgress(trace.tldr, prev)) {
 				trace.error = "(skipped: near-duplicate of previous TLDR)";
 			}
 			accepted.push({
