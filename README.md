@@ -3,10 +3,10 @@
 [![npm version](https://img.shields.io/npm/v/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 [![npm downloads](https://img.shields.io/npm/dm/pi-bar.svg)](https://www.npmjs.com/package/pi-bar)
 
-**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, a live progress update, and any extension statuses visible in pi's footer.
+**Never accidentally run Opus on a typo again.** pi-bar keeps your model, thinking level, context pressure, optional current working directory, a live progress update, and any extension statuses visible in pi's footer.
 
 ```text
-claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
+claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  ~/.dotfiles  ❯  Reviewing package structure  ❯  plan:active ❯ queue:2
 ```
 
 ![pi-bar with low context usage](https://cdn.jsdelivr.net/npm/pi-bar@0.3.38/assets/screenshot-green.png)
@@ -43,7 +43,7 @@ pi-bar works out of the box. Run `/bar` inside pi to choose which footer segment
 /bar
 ```
 
-Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
+Toggle `Model`, `Thinking level`, `Context usage`, `Current directory`, `Progress update`, and `Extension statuses` between `shown` and `hidden`. If other extensions have published status badges, `/bar` also shows fine-grained `Status: <key>` rows plus a `New extension statuses` default. You can also use commands:
 
 ```text
 /bar segments list
@@ -52,13 +52,13 @@ Toggle `Model`, `Thinking level`, `Context usage`, `Progress update`, and `Exten
 /bar segments show thinking
 ```
 
-Allowed segments are `model`, `thinking`, `context`, `progress`, and `extensions`. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
+Allowed segments are `model`, `thinking`, `context`, `cwd`, `progress`, and `extensions`. The `cwd` segment shows the current working directory with your home directory shortened to `~` and long paths compacted. The `progress` segment stays hidden until pi-bar has a current update. The `extensions` segment stays hidden when no extension has set a status.
 
 You can also set startup defaults with environment variables before launching pi:
 
 ```bash
-PI_BAR_SHOW=model,thinking,context,progress,extensions pi
-PI_BAR_SHOW=model,context pi
+PI_BAR_SHOW=model,thinking,context,cwd,progress,extensions pi
+PI_BAR_SHOW=model,context,cwd pi
 ```
 
 ### Configure live progress updates

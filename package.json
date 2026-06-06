@@ -19,12 +19,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tianrendong/pi-bar.git"
+    "url": "git+https://github.com/benjaminwestern/pi-bar.git"
   },
   "bugs": {
-    "url": "https://github.com/tianrendong/pi-bar/issues"
+    "url": "https://github.com/benjaminwestern/pi-bar/issues"
   },
-  "homepage": "https://github.com/tianrendong/pi-bar#readme",
+  "homepage": "https://github.com/benjaminwestern/pi-bar#readme",
   "files": [
     "assets",
     "extensions",

@@ -2,7 +2,7 @@
  * pi-bar — footer / statusline extension.
  *
  * Replaces pi's built-in footer with left-aligned segments:
- *   <model> ❯ think:<level> ❯ <context% / window> ❯ <progress> ❯ <extensions>
+ *   <model> ❯ think:<level> ❯ <context% / window> ❯ <cwd> ❯ <progress> ❯ <extensions>
  *
  * Example:
  *   claude-opus-4.7  ❯  think:med  ❯  2.6% / 1.0M  ❯  Reviewing package structure
@@ -14,6 +14,7 @@
  *   PI_BAR_SHOW           comma-separated list of segments to show
  *   PI_BAR_THRESHOLDS     warning,danger context-usage percentages
  *   PI_BAR_PROGRESS_MODEL provider/id for the progress update model
+ *   PI_BAR_CWD_MAX_WIDTH  maximum display width for the cwd segment
  *   PI_BAR_CONFIG         override the persisted pi-bar config path
  */
 
@@ -35,7 +36,7 @@ import {
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 
-type SegmentName = "model" | "thinking" | "context" | "progress" | "extensions";
+type SegmentName = "model" | "thinking" | "context" | "cwd" | "progress" | "extensions";
 type StatusFilter =
 	| { mode: "all"; hidden: Set<string> }
 	| { mode: "only"; shown: Set<string> };
@@ -104,6 +105,7 @@ const NORMAL_CHECKPOINT_MAX_WAIT_MS = 2_500;
 // Defensive ceiling: even if the model ignores the length instruction, never
 // blast a large payload into the footer.
 const MAX_SAFE_PROGRESS_CHARS = 240;
+const DEFAULT_CWD_MAX_WIDTH = 36;
 const CONFIG_PATH =
 	process.env.PI_BAR_CONFIG ?? join(homedir(), ".pi", "agent", "pi-bar.json");
 
@@ -118,6 +120,7 @@ const ALL_SEGMENTS: readonly SegmentName[] = [
 	"model",
 	"thinking",
 	"context",
+	"cwd",
 	"progress",
 	"extensions",
 ];
@@ -125,6 +128,7 @@ const SEGMENT_LABELS: Record<SegmentName, string> = {
 	model: "Model",
 	thinking: "Thinking level",
 	context: "Context usage",
+	cwd: "Current directory",
 	progress: "Progress update",
 	extensions: "Extension statuses",
 };
@@ -150,6 +154,33 @@ function formatModelName(id: string | undefined): string {
 	if (!id) return "no-model";
 	const base = id.includes("/") ? (id.split("/").pop() ?? id) : id;
 	return base.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+}
+
+function cwdMaxWidth(): number {
+	const value = Number.parseInt(process.env.PI_BAR_CWD_MAX_WIDTH ?? "", 10);
+	return Number.isFinite(value) && value >= 8 ? value : DEFAULT_CWD_MAX_WIDTH;
+}
+
+function formatCwd(cwd: string | undefined): string {
+	if (!cwd) return "—";
+	const home = homedir();
+	const displayCwd = cwd === home
+		? "~"
+		: cwd.startsWith(`${home}/`)
+			? `~/${cwd.slice(home.length + 1)}`
+			: cwd;
+	const maxWidth = cwdMaxWidth();
+	if (displayCwd.length <= maxWidth) return displayCwd;
+
+	const parts = displayCwd.split("/").filter(Boolean);
+	if (parts.length <= 2) return truncateToWidth(displayCwd, maxWidth);
+
+	const prefix = displayCwd.startsWith("~/") ? "~/" : displayCwd.startsWith("/") ? "/" : "";
+	let compacted = `${prefix}…/${parts.slice(-2).join("/")}`;
+	if (compacted.length <= maxWidth) return compacted;
+
+	compacted = `${prefix}…/${parts[parts.length - 1]}`;
+	return truncateToWidth(compacted, maxWidth);
 }
 
 function thinkingColor(level: string): ThemeColor {
@@ -1653,6 +1684,7 @@ export default function (pi: ExtensionAPI) {
 	let requestRender: (() => void) | undefined;
 	let statusFilter: StatusFilter = { mode: "all", hidden: new Set() };
 	let visibleSegments: SegmentName[] = readGlobalSegments() ?? DEFAULT_SEGMENTS;
+	let activeCwd: string | undefined;
 	const seenStatusKeys = new Set<string>();
 	const refresh = () => requestRender?.();
 	const progress = new FooterProgressEngine(refresh);
@@ -2061,6 +2093,7 @@ export default function (pi: ExtensionAPI) {
 		progress.shutdown();
 	});
 	pi.on("session_tree", async (_event, ctx) => {
+		activeCwd = ctx.cwd;
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
 		restoreStatusFilter(ctx);
@@ -2068,6 +2101,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		activeCwd = ctx.cwd;
 		visibleSegments = readGlobalSegments() ?? DEFAULT_SEGMENTS;
 		if (visibleSegments.includes("progress")) progress.startSession(ctx.cwd);
 		else progress.shutdown();
@@ -2114,6 +2148,7 @@ export default function (pi: ExtensionAPI) {
 						model: theme.fg("accent", modelName),
 						thinking: theme.fg(thinkingColor(thinkingLevel), `think:${thinkingLevel}`),
 						context: theme.fg(contextSegmentColor, contextText),
+						cwd: theme.fg("text", formatCwd(activeCwd ?? ctx.cwd)),
 						progress: progressText ? theme.fg("text", progressText) : null,
 						extensions: extensionStatuses,
 					};
